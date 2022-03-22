@@ -1,4 +1,5 @@
 app.py
+samconfig.toml
 template.yaml
 .aws-sam/*
 events/*

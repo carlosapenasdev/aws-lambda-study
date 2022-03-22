@@ -104,6 +104,7 @@ Resources:
     Properties:
       Handler: app.lambda_handler
       Runtime: python3.7
+      Timeout: 60
       Layers:
           - $LAYERARN
 EOF
@@ -114,9 +115,22 @@ $ tee -a events/events.json <<EOF
     "first_name": "Carlos",
     "last_name": "Santos"
 }
-$ sam build
 EOF
 ```
+## 4. Deploy AWS
+
+```bash
+$ clear && sam build && sam local invoke HelloNameFunction -e events/events.json
+$ sam deploy --guided
+```
+- Stack name: HelloNameFunction
+- Region: us-east-1
+- Confirm changes before deploy ? Deseja ver e aprovar as alterações antes do deploy? Default
+- Allow SAM CLI IAM role creation. Default.
+- Save arguments (the ones you just made) to configuration file. Default.
+- Name of configuration file. Default
+- SAM configuration environment. Default.
+- Confirm the proposed changeset and watch as your resources are deployed.
 
 ## Referência
 
