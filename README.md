@@ -25,10 +25,9 @@ $ mkdir events && touch events/events.json
 $ aws ec2 create-key-pair --key-name MyKeyPair --query 'KeyMaterial' --output text > ~/.aws/MyKeyPair.pem
 $ chmod 400 MyKeyPair.pem
 $ aws ec2 create-security-group --group-name sgEc2Lambda --description "Security group EC2 Lambda"
-$ aws ec2 run-instances --instance-type t2.micro --key-name MyKeyPair
 $ SECURITYGROUPID=$(aws ec2 describe-security-groups --group-name sgEc2Lambda --query "SecurityGroups[*].{Name:GroupId}" --output text)
 $ aws ec2 authorize-security-group-ingress --group-name sgEc2Lambda --protocol tcp --port 22 --cidr 0.0.0.0/0
-$ aws ec2 run-instances --image-id ami-0c02fb55956c7d316 --security-group-ids $SECURITYGROUPID --instance-type t2.micro --key-name AwsKeyPair
+$ aws ec2 run-instances --image-id ami-0c02fb55956c7d316 --security-group-ids $SECURITYGROUPID --instance-type t2.micro --key-name MyKeyPair
 $ EC2IP=$(aws ec2 describe-instances --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
 ```
 ### 2.2 conectado na EC2 micro
@@ -71,7 +70,19 @@ $ aws ec2 stop-instances --instance-ids $EC2ID && aws ec2 terminate-instances --
 $ LAYERARN=$(aws lambda list-layers --query 'Layers[?LayerName==`Layer-Pillow-Boto`].LatestMatchingVersion.LayerVersionArn' --output text)
 ```
 
-## 3. Aplicação e template
+## 3. Criar Bucket S3
+```bash
+$ aws s3api create-bucket --acl authenticated-read --bucket hello-local
+$ aws s3api put-public-access-block --bucket hello-local --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+$ aws iam create-role --role-name lambda-police --assume-role-policy-document '{"Version": "2012-10-17","Statement": [{ "Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]}'
+$ aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/AWSLambda_FullAccess --role-name lambda-police
+$ aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess --role-name lambda-police
+$ aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole --role-name lambda-police
+$ ROLEARN=$(aws iam list-roles --query 'Roles[?RoleName==`lambda-police`].Arn' --output text)
+
+```
+
+## 4. Aplicação e template
 
 ```bash
 $ tee -a app.py <<EOF
@@ -105,6 +116,7 @@ Resources:
       Handler: app.lambda_handler
       Runtime: python3.7
       Timeout: 60
+      Role: $ROLEARN
       Layers:
           - $LAYERARN
 EOF
@@ -117,7 +129,7 @@ $ tee -a events/events.json <<EOF
 }
 EOF
 ```
-## 4. Deploy AWS
+## 5. Deploy AWS
 
 ```bash
 $ clear && sam build && sam local invoke HelloNameFunction -e events/events.json
@@ -138,3 +150,4 @@ $ sam deploy --guided
  - [Launch and Manage EC2 Instances Using AWS CLI](https://medium.com/swlh/launch-and-manage-ec2-instances-using-aws-cli-7efae00e264b)
  - [Python 3.7 plus Pillow in Lambda not working](https://forums.aws.amazon.com/thread.jspa?threadID=309588)
  - [Building Custom Layers on AWS Lambda](https://towardsdatascience.com/building-custom-layers-on-aws-lambda-35d17bd9abbb)
+ - [Resize an image using Amazon S3 and Lambda](https://austinlasseter.medium.com/resize-an-image-using-aws-s3-and-lambda-fda7a6abc61c)
