@@ -68,7 +68,7 @@ $ aws ec2 stop-instances --instance-ids $EC2ID && aws ec2 terminate-instances --
 ```
 ### 2.4 Armazenar ARN da Layer
 ```bash
-$ LAYERARN=$(aws lambda list-layers --query 'Layers[?LayerName==`Layer-Pillow-Boto`].LayerArn' --output text)
+$ LAYERARN=$(aws lambda list-layers --query 'Layers[?LayerName==`Layer-Pillow-Boto`].LatestMatchingVersion.LayerVersionArn' --output text)
 ```
 
 ## 3. Aplicação e template
@@ -76,12 +76,17 @@ $ LAYERARN=$(aws lambda list-layers --query 'Layers[?LayerName==`Layer-Pillow-Bo
 ```bash
 $ tee -a app.py <<EOF
 import json
+import subprocess
 
 def lambda_handler(event, context):
     first_name = event['first_name']
     last_name = event['last_name']
 
     message = f"Hello {first_name} {last_name}!"  
+
+    print(subprocess.run(["pip --version"], shell=True, check=True, capture_output=True, text=True).stdout)
+    print(subprocess.run(["pip list"], shell=True, check=True, capture_output=True, text=True).stdout)
+    print(subprocess.run(["cat /etc/system-release"], shell=True, check=True, capture_output=True, text=True).stdout)
 
     return { 
         'message' : message
@@ -104,14 +109,14 @@ Resources:
 EOF
 ```
 ```bash
-sam build
+$ tee -a events/events.json <<EOF
+{
+    "first_name": "Carlos",
+    "last_name": "Santos"
+}
+$ sam build
+EOF
 ```
-
-
-## Apêndice
-
-Coloque qualquer informação adicional aqui
-
 
 ## Referência
 
