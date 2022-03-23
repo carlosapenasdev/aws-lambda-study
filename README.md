@@ -13,81 +13,28 @@ Crie um projeto local com os comandos abaixo no terminal:
 
 
 ```bash
-$ mkdir lambda && cd lambda && touch app.py template.yaml
-$ mkdir events && touch events/events.json
+mkdir lambda && cd lambda && touch app.py template.yaml
+mkdir events && touch events/events.json
 ```
-
-## 2. Configurar instancia EC2 (para preparar as dependencias das Lambda Layers)
-### 2.1 subir instancia EC2 micro
-- [AWS Doc](https://docs.aws.amazon.com/pt_br/cli/latest/userguide/cli-services-ec2-instances.html)
-
+## 2. Teste Layer Local no template
 ```bash
-$ aws ec2 create-key-pair --key-name MyKeyPair --query 'KeyMaterial' --output text > ~/.aws/MyKeyPair.pem
-$ chmod 400 MyKeyPair.pem
-$ aws ec2 create-security-group --group-name sgEc2Lambda --description "Security group EC2 Lambda"
-$ SECURITYGROUPID=$(aws ec2 describe-security-groups --group-name sgEc2Lambda --query "SecurityGroups[*].{Name:GroupId}" --output text)
-$ aws ec2 authorize-security-group-ingress --group-name sgEc2Lambda --protocol tcp --port 22 --cidr 0.0.0.0/0
-$ aws ec2 run-instances --image-id ami-0c02fb55956c7d316 --security-group-ids $SECURITYGROUPID --instance-type t2.micro --key-name MyKeyPair
-$ EC2IP=$(aws ec2 describe-instances --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-```
-### 2.2 conectado na EC2 micro
-```bash
-$ ssh -i example-key.pem ec2-user@$EC2IP
-ec2-user$ aws configure # (and enter in your credentials)
-ec2-user$ sudo yum update -y
-ec2-user$ sudo su
-ec2-user$ rm -rf /usr/lib64/python2.7/dist-packages/PIL
-ec2-user$ sudo yum install -y gcc bzip2-devel ncurses-devel gdbm-devel xz-devel sqlite-devel openssl-devel tk-devel uuid-devel readline-devel zlib-devel libffi-devel
-ec2-user$ wget https://www.python.org/ftp/python/3.7.0/Python-3.7.0.tar.xz
-ec2-user$ tar -xJf Python-3.7.0.tar.xz
-ec2-user$ cd Python-3.7.0
-ec2-user$ ./configure --enable-optimizations
-ec2-user$ make altinstall
-ec2-user$ pip3.7 install --upgrade pip
-ec2-user$ exit #exit from sudo su
-ec2-user$ mkdir libs && cd libs
-ec2-user$ mkdir -p aws-layer/python/lib/python3.7/site-packages
-ec2-user$ tee -a requirements.txt <<EOF
+mkdir lambda_layer
+tee -a lambda_layer/requirements.txt <<EOF
 pillow == 9.0.1
 boto3 == 1.21.23
 EOF
-ec2-user$ pip install -r requirements.txt --target aws-layer/python/lib/python3.7/site-packages
-ec2-user$ cd aws-layer && zip -r9 lambda-layer.zip .
-ec2-user$ aws lambda publish-layer-version \
-    --layer-name Layer-Pillow-Boto \
-    --description "Python layer with pillow and boto" \
-    --zip-file fileb://lambda-layer.zip \
-    --compatible-runtimes python3.7
-ec2-user$ exit #exit from ec2 instance
-```
-### 2.3 encerrando a EC2 micro
-```bash
-$ EC2ID=$(aws ec2 describe-instances --query 'Reservations[0].Instances[0].InstanceId' --output text)
-$ aws ec2 stop-instances --instance-ids $EC2ID && aws ec2 terminate-instances --instance-ids $EC2ID
-```
-### 2.4 Armazenar ARN da Layer
-```bash
-$ LAYERARN=$(aws lambda list-layers --query 'Layers[?LayerName==`Layer-Pillow-Boto`].LatestMatchingVersion.LayerVersionArn' --output text)
-```
 
-## 3. Criar Bucket S3
-```bash
-$ aws s3api create-bucket --acl authenticated-read --bucket hello-local
-$ aws s3api put-public-access-block --bucket hello-local --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
-$ aws iam create-role --role-name lambda-police --assume-role-policy-document '{"Version": "2012-10-17","Statement": [{ "Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]}'
-$ aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/AWSLambda_FullAccess --role-name lambda-police
-$ aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess --role-name lambda-police
-$ aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole --role-name lambda-police
-$ ROLEARN=$(aws iam list-roles --query 'Roles[?RoleName==`lambda-police`].Arn' --output text)
-
+echo -e "build-LambdaLayer:" > lambda_layer/Makefile
+echo -e "\tmkdir -p \"\${ARTIFACTS_DIR}/python\"" >> lambda_layer/Makefile
+echo -e "\tdocker run --user 1000:1000 -v \"$PWD\":/var/task \"lambci/lambda:build-python3.7\" /bin/sh -c \"pip install -r lambda_layer/requirements.txt -t .aws-sam/build/LambdaLayer/python; exit\"" >> lambda_layer/Makefile
 ```
-
-## 4. Aplicação e template
+## 3. Aplicação e template
 
 ```bash
-$ tee -a app.py <<EOF
+tee -a app.py <<EOF
 import json
 import subprocess
+from PIL import Image
 
 def lambda_handler(event, context):
     first_name = event['first_name']
@@ -106,34 +53,50 @@ EOF
 ```
 
 ```bash
-$ tee -a template.yaml <<EOF
+tee -a template.yaml <<EOF
 AWSTemplateFormatVersion : '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Resources:
+  LambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: lambda_layer
+      ContentUri: lambda_layer
+      CompatibleRuntimes:
+        - python3.7
+    Metadata:
+      BuildMethod: makefile
   HelloNameFunction:
     Type: AWS::Serverless::Function
     Properties:
       Handler: app.lambda_handler
       Runtime: python3.7
       Timeout: 60
-      Role: $ROLEARN
       Layers:
-          - $LAYERARN
+        - !Ref LambdaLayer
+      Events:
+        FileUpload:
+          Type: S3
+          Properties: 
+            Bucket: !Ref HelloLocalBucket
+            Events: s3:ObjectCreated:*
+  HelloLocalBucket:
+    Type: AWS::S3::Bucket
 EOF
 ```
 ```bash
-$ tee -a events/events.json <<EOF
+tee -a events/events.json <<EOF
 {
     "first_name": "Carlos",
     "last_name": "Santos"
 }
 EOF
 ```
-## 5. Deploy AWS
+## 4. Deploy AWS
 
 ```bash
-$ clear && sam build && sam local invoke HelloNameFunction -e events/events.json
-$ sam deploy --guided
+clear && sam build && sam local invoke HelloNameFunction -e events/events.json
+sam deploy --guided
 ```
 - Stack name: HelloNameFunction
 - Region: us-east-1
