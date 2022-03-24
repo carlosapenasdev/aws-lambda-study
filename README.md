@@ -72,6 +72,9 @@ Resources:
       Handler: app.lambda_handler
       Runtime: python3.7
       Timeout: 60
+      Policies:
+        S3ReadPolicy:
+          BucketName: bucket-receive-images
       Layers:
         - !Ref LambdaLayer
       Events:
@@ -80,8 +83,29 @@ Resources:
           Properties: 
             Bucket: !Ref HelloLocalBucket
             Events: s3:ObjectCreated:*
+  MediaBucketS3Policy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref HelloLocalBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:*'
+            Effect: 'Allow'
+            Resource: !Sub 'arn:aws:s3:::${HelloLocalBucket}/*'
+            Principal: '*'
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt HelloNameFunction.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 's3.amazonaws.com'
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt HelloLocalBucket.Arn
   HelloLocalBucket:
     Type: AWS::S3::Bucket
+    Properties:
+      BucketName: bucket-receive-images
 EOF
 ```
 ```bash
@@ -91,6 +115,9 @@ tee -a events/events.json <<EOF
     "last_name": "Santos"
 }
 EOF
+```
+```bash
+curl -L 'https://images.pexels.com/photos/9754913/pexels-photo-9754913.jpeg?cs=srgb&dl=pexels-jonathan-cooper-9754913.jpg&fm=jpg&w=13440' -o base.jpg
 ```
 ## 4. Deploy AWS
 
