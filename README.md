@@ -13,99 +13,136 @@ Crie um projeto local com os comandos abaixo no terminal:
 
 
 ```bash
-mkdir lambda && cd lambda && touch app.py template.yaml
-mkdir events && touch events/events.json
+touch app.py template.yaml
+touch events/events.json
 ```
 ## 2. Teste Layer Local no template
 ```bash
-mkdir lambda_layer
-tee -a lambda_layer/requirements.txt <<EOF
+mkdir lambda_layerv1
+tee -a lambda_layerv1/requirements.txt <<EOF
 pillow == 9.0.1
 boto3 == 1.21.23
 EOF
 
-echo -e "build-LambdaLayer:" > lambda_layer/Makefile
-echo -e "\tmkdir -p \"\${ARTIFACTS_DIR}/python\"" >> lambda_layer/Makefile
-echo -e "\tdocker run --user 1000:1000 -v \"$PWD\":/var/task \"lambci/lambda:build-python3.7\" /bin/sh -c \"pip install -r lambda_layer/requirements.txt -t .aws-sam/build/LambdaLayer/python; exit\"" >> lambda_layer/Makefile
+
+echo -e "build-LambdaLayerv1:" > lambda_layerv1/Makefile
+echo -e "\tmkdir -p \"\${ARTIFACTS_DIR}/python\"" >> lambda_layerv1/Makefile
+echo -e "\tdocker run --user 1000:1000 -v \"$PWD\":/var/task \"lambci/lambda:build-python3.7\" /bin/sh -c \"pip install -r lambda_layerv1/requirements.txt -t .aws-sam/build/LambdaLayerv1/python; exit\"" >> lambda_layerv1/Makefile
 ```
 ## 3. Aplicação e template
 
 ```bash
 tee -a app.py <<EOF
-import json
-import subprocess
+import boto3
+import os
+import sys
+import uuid
 from PIL import Image
+import PIL.Image
+     
+s3_client = boto3.client('s3')
+     
+def resize_image(image_path, resized_path, width, height):
+    with Image.open(image_path) as image:
+        image.thumbnail((width, height),PIL.Image.ANTIALIAS)
+        image.save(resized_path)
+
+def thumb(bktOri, bktDest, keyFile, width, height):
+    localFile           = '/tmp/{}{}'.format(uuid.uuid4(), keyFile)
+    localFileResized    = '/tmp/resized-{}'.format(keyFile)
+    s3_client.download_file(bktOri, keyFile, localFile)
+    resize_image(localFile, localFileResized, width, height)
+    s3_client.upload_file(localFileResized, bktDest, "thumb-"+keyFile)
+    s3_client.delete_object(Bucket=bktOri, Key=keyFile)
 
 def lambda_handler(event, context):
-    first_name = event['first_name']
-    last_name = event['last_name']
+    for record in event['Records']:
+        bucket = record['s3']['bucket']['name']
+        key = record['s3']['object']['key'] 
+        
+        thumb(bucket, 'bucket-store-imagesv1', key, 128, 128)
 
-    message = f"Hello {first_name} {last_name}!"  
 
-    print(subprocess.run(["pip --version"], shell=True, check=True, capture_output=True, text=True).stdout)
-    print(subprocess.run(["pip list"], shell=True, check=True, capture_output=True, text=True).stdout)
-    print(subprocess.run(["cat /etc/system-release"], shell=True, check=True, capture_output=True, text=True).stdout)
-
-    return { 
-        'message' : message
-    }
 EOF
 ```
 
 ```bash
 tee -a template.yaml <<EOF
+
 AWSTemplateFormatVersion : '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Resources:
-  LambdaLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: lambda_layer
-      ContentUri: lambda_layer
-      CompatibleRuntimes:
-        - python3.7
-    Metadata:
-      BuildMethod: makefile
-  HelloNameFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      Handler: app.lambda_handler
-      Runtime: python3.7
-      Timeout: 60
-      Policies:
-        S3ReadPolicy:
-          BucketName: bucket-receive-images
-      Layers:
-        - !Ref LambdaLayer
-      Events:
-        FileUpload:
-          Type: S3
-          Properties: 
-            Bucket: !Ref HelloLocalBucket
-            Events: s3:ObjectCreated:*
-  MediaBucketS3Policy:
+  BucketReceiveImagesv1S3Policy:
     Type: 'AWS::S3::BucketPolicy'
     Properties:
-      Bucket: !Ref HelloLocalBucket
+      Bucket: bucket-receive-imagesv1
       PolicyDocument:
         Statement:
           - Action:
               - 's3:*'
             Effect: 'Allow'
-            Resource: !Sub 'arn:aws:s3:::${HelloLocalBucket}/*'
+            Resource: !Sub 'arn:aws:s3:::${BucketReceiveImagesv1}/*'
             Principal: '*'
+  BucketReceiveImagesv1:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: bucket-receive-imagesv1
+
+  BucketStoreImagesv1S3Policy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: bucket-store-imagesv1
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:*'
+            Effect: 'Allow'
+            Resource: !Sub 'arn:aws:s3:::${BucketStoreImagesv1}/*'
+            Principal: '*'
+  BucketStoreImagesv1:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: bucket-store-imagesv1
+
   LambdaInvokePermission:
     Type: 'AWS::Lambda::Permission'
     Properties:
-      FunctionName: !GetAtt HelloNameFunction.Arn
+      FunctionName: !GetAtt LambdaPyv1Function.Arn
       Action: 'lambda:InvokeFunction'
       Principal: 's3.amazonaws.com'
       SourceAccount: !Ref 'AWS::AccountId'
-      SourceArn: !GetAtt HelloLocalBucket.Arn
-  HelloLocalBucket:
-    Type: AWS::S3::Bucket
+      SourceArn: !GetAtt BucketReceiveImagesv1.Arn
+  LambdaLayerv1:
+
+    Type: AWS::Serverless::LayerVersion
     Properties:
-      BucketName: bucket-receive-images
+      LayerName: lambda_layerv1
+      ContentUri: lambda_layerv1
+      CompatibleRuntimes:
+        - python3.7
+    Metadata:
+      BuildMethod: makefile
+  LambdaPyv1Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.7
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - S3ReadPolicy:
+            BucketName: bucket-receive-imagesv1
+        - S3WritePolicy:
+            BucketName: bucket-store-imagesv1
+      Layers:
+        - !Ref LambdaLayerv1
+      Events:
+        FileUpload:
+          Type: S3
+          Properties: 
+            Bucket: !Ref BucketReceiveImagesv1
+            Events: s3:ObjectCreated:*
+
 EOF
 ```
 ```bash
